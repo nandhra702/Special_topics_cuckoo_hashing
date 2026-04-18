@@ -1,10 +1,15 @@
 use rand::RngExt;
 use std::time::Instant;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
-struct CuckooHashTable{
-    table1: Vec<Option<i64>>, //first hash function hashes to this
-    table2: Vec<Option<i64>>, //2nd hash function hashes to this
-    size: usize, //store the table size. USIZE is unsigned integer
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
+struct CuckooHashTable {
+    table1: Vec<Option<i64>>,
+    table2: Vec<Option<i64>>,
+    size: usize,
 
     a1: i64,
     b1: i64,
@@ -16,40 +21,27 @@ struct CuckooHashTable{
     total_kicks: usize,
 }
 
-
-/* we just created the struct. Now unlike cpp, rust doesnt have null. SO we use something
-new, AKA Option. SO, its like a vector of options. An option can have 2 values. NONE (empty slot) or Some(any value)
-.
-So the table would look like : [None, Some(10), None, Some(25), ...]
-*/
-
-//fn is the function keyword. impl is keyword for 'implement functionality'
-//used for structs, groups functions together under a namespace for that struct
-
 impl CuckooHashTable {
-   
-    /*This function takes in a size, makes a vector of that size, thats full of nones. Its basically a constructor*/
-    
+
     fn new(size: usize) -> Self {
-    let mut rng = rand::rng();  // ✅ define first
+        let mut rng = rand::rng();
 
-    CuckooHashTable {
-        table1: vec![None; size],
-        table2: vec![None; size],
-        size,
+        CuckooHashTable {
+            table1: vec![None; size],
+            table2: vec![None; size],
+            size,
 
-        a1: rng.random_range(1..1_000_000_007),
-        b1: rng.random_range(0..1_000_000_007),
-        a2: rng.random_range(1..1_000_000_007),
-        b2: rng.random_range(0..1_000_000_007),
-        p: 1_000_000_007,
+            a1: rng.random_range(1..1_000_000_007),
+            b1: rng.random_range(0..1_000_000_007),
+            a2: rng.random_range(1..1_000_000_007),
+            b2: rng.random_range(0..1_000_000_007),
+            p: 1_000_000_007,
 
-        rehash_count: 0,
-        total_kicks: 0,
+            rehash_count: 0,
+            total_kicks: 0,
+        }
     }
-}
 
-    //THE SAID HASH FUNCTIONS UNIVERSAL HASHING : h(x)=((a⋅x+b)modp)modm
     fn hash1(&self, key: i64) -> usize {
         (((self.a1 * key + self.b1) % self.p) as usize) % self.size
     }
@@ -58,7 +50,6 @@ impl CuckooHashTable {
         (((self.a2 * key + self.b2) % self.p) as usize) % self.size
     }
 
-    //FUNCTION TO REGENERATE THE NEW HASHES DIRECTLY USED BY REHASHER
     fn regenerate_hashes(&mut self) {
         let mut rng = rand::rng();
         self.a1 = rng.random_range(1..self.p);
@@ -67,20 +58,20 @@ impl CuckooHashTable {
         self.b2 = rng.random_range(0..self.p);
     }
 
-    //ON REHASHING, double the size of the table
     fn rehash(&mut self) {
         println!("Rehash #{}, size = {}", self.rehash_count, self.size);
+
         if self.rehash_count > 20 {
-        panic!("Too many rehashes — aborting to prevent OOM");
+            panic!("Too many rehashes — aborting");
         }
+
         self.rehash_count += 1;
 
         let old_table1 = self.table1.clone();
         let old_table2 = self.table2.clone();
 
-        // resize 
         if self.rehash_count % 2 == 0 {
-        self.size *= 2;
+            self.size *= 2;
         }
 
         self.table1 = vec![None; self.size];
@@ -95,17 +86,14 @@ impl CuckooHashTable {
         }
     }
 
-    //STAR INSERT FUNCTION
     fn insert(&mut self, key: i64) -> bool {
-
         if self.contains(key) {
-           return true;
+            return true;
         }
 
         let mut current = key;
         let mut table_id = 1;
-
-        let max_kicks = 500; //hardcode
+        let max_kicks = 500;
 
         for _ in 0..max_kicks {
             if table_id == 1 {
@@ -116,7 +104,6 @@ impl CuckooHashTable {
                     return true;
                 }
 
-                // kick
                 let displaced = self.table1[i].unwrap();
                 self.table1[i] = Some(current);
                 current = displaced;
@@ -131,7 +118,6 @@ impl CuckooHashTable {
                     return true;
                 }
 
-                // kick
                 let displaced = self.table2[i].unwrap();
                 self.table2[i] = Some(current);
                 current = displaced;
@@ -140,9 +126,8 @@ impl CuckooHashTable {
             }
         }
 
-        // cycle detected
         self.rehash();
-        return self.insert(current)
+        self.insert(current)
     }
 
     fn contains(&self, key: i64) -> bool {
@@ -160,31 +145,68 @@ impl CuckooHashTable {
     }
 }
 
-/* ================= BENCHMARKING ================= */
-/*
-fn generate_dataset(n: usize, range: i64) -> Vec<i64> {
-    let mut rng = rand::rng();
-    let mut data = Vec::with_capacity(n);
+/* ================= DATASET HELPERS ================= */
 
-    for _ in 0..n {
-        data.push(rng.random_range(1..range));
-    }
+fn read_lines(path: &str, limit: usize) -> Vec<String> {
+    let file = File::open(path).expect("Cannot open file");
+    let reader = BufReader::new(file);
 
-    data
-}*/
-
-use std::collections::HashSet;
-
-fn generate_dataset(n: usize, range: i64) -> Vec<i64> {
-    let mut rng = rand::rng();
-    let mut set = HashSet::new();
-
-    while set.len() < n {
-        set.insert(rng.random_range(1..range));
-    }
-
-    set.into_iter().collect()
+    reader
+        .lines()
+        .take(limit)
+        .map(|l| l.unwrap())
+        .collect()
 }
+
+fn string_to_i64(s: &str) -> i64 {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish() as i64
+}
+
+fn ip_to_i64(ip: &str) -> i64 {
+    let parts: Vec<u8> = ip
+        .split('.')
+        .map(|x| x.parse::<u8>().unwrap())
+        .collect();
+
+    ((parts[0] as i64) << 24)
+        | ((parts[1] as i64) << 16)
+        | ((parts[2] as i64) << 8)
+        | (parts[3] as i64)
+}
+
+/* ================= DATASET LOADERS ================= */
+
+fn load_google_words(path: &str, limit: usize) -> Vec<i64> {
+    read_lines(path, limit)
+        .into_iter()
+        .map(|s| string_to_i64(&s))
+        .collect()
+}
+
+fn load_wiki_words(path: &str, limit: usize) -> Vec<i64> {
+    read_lines(path, limit)
+        .into_iter()
+        .map(|s| string_to_i64(&s))
+        .collect()
+}
+
+fn load_ip_dataset(path: &str, limit: usize) -> Vec<i64> {
+    read_lines(path, limit)
+        .into_iter()
+        .map(|ip| ip_to_i64(&ip))
+        .collect()
+}
+
+fn load_osm_ids(path: &str, limit: usize) -> Vec<i64> {
+    read_lines(path, limit)
+        .into_iter()
+        .map(|s| s.parse::<i64>().unwrap())
+        .collect()
+}
+
+/* ================= BENCHMARK ================= */
 
 fn benchmark_insert(data: &Vec<i64>) -> CuckooHashTable {
     let mut table = CuckooHashTable::new(data.len() * 2);
@@ -211,8 +233,7 @@ fn benchmark_lookup_found(table: &CuckooHashTable, data: &Vec<i64>) {
         table.contains(key);
     }
 
-    let duration = start.elapsed();
-    println!("Lookup (found): {:?}", duration);
+    println!("Lookup (found): {:?}", start.elapsed());
 }
 
 fn benchmark_lookup_not_found(table: &CuckooHashTable, data: &Vec<i64>) {
@@ -222,36 +243,7 @@ fn benchmark_lookup_not_found(table: &CuckooHashTable, data: &Vec<i64>) {
         table.contains(key + 1_000_000_000);
     }
 
-    let duration = start.elapsed();
-    println!("Lookup (not found): {:?}", duration);
-}
-
-fn load_factor_experiment() {
-    let loads = [0.5, 0.7, 0.85, 0.9];
-
-    println!("\n--- Load Factor Experiment ---");
-
-    for &load in &loads {
-        let n = 50_000;
-        let capacity = (n as f64 /(2.0*load)) as usize;     //AS WE have 2 tables, so twice the capacity right
-
-        let data = generate_dataset(20_000, 1_000_000);
-
-        let mut table = CuckooHashTable::new(capacity);
-
-        let start = Instant::now();
-
-        for &key in &data {
-            table.insert(key);
-        }
-
-        let duration = start.elapsed();
-
-        println!(
-            "Load {:.2} → time {:?}, rehashes {}, kicks {}",
-            load, duration, table.rehash_count, table.total_kicks
-        );
-    }
+    println!("Lookup (not found): {:?}", start.elapsed());
 }
 
 fn memory_usage(table: &CuckooHashTable) {
@@ -262,19 +254,35 @@ fn memory_usage(table: &CuckooHashTable) {
     println!("Approx memory (bytes): {}", bytes);
 }
 
+/* ================= RUNNER ================= */
+
+fn run_dataset(name: &str, data: Vec<i64>) {
+    println!("\n=== {} ===", name);
+
+    let table = benchmark_insert(&data);
+    benchmark_lookup_found(&table, &data);
+    benchmark_lookup_not_found(&table, &data);
+    memory_usage(&table);
+}
+
 /* ================= MAIN ================= */
 
 fn main() {
-    println!("--- Cuckoo Hashing Benchmark ---");
+    println!("--- Real Dataset Benchmark ---");
 
-    let dataset = generate_dataset(100_000, 1_000_000);
+    // 🔹 Google words (START HERE)
+    let google = load_google_words("data/google-10000-english.txt", 10_000);
+    run_dataset("Google Words", google);
 
-    let table = benchmark_insert(&dataset);
+    // 🔹 Wikipedia
+    let wiki = load_wiki_words("data/enwiki-latest-all-titles-in-ns0", 50_000); 
+    run_dataset("Wikipedia", wiki);
 
-    benchmark_lookup_found(&table, &dataset);
-    benchmark_lookup_not_found(&table, &dataset);
+    // 🔹 IP dataset
+    //] let ip = load_ip_dataset("data/ip.txt", 50_000);
+    // run_dataset("IP Dataset", ip);
 
-    memory_usage(&table);
-
-    load_factor_experiment();
+    // 🔹 OSM IDs
+    let osm = load_osm_ids("data/osm_ids.txt", 100_000);
+    run_dataset("OSM IDs", osm);
 }
