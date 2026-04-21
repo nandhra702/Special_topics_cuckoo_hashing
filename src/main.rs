@@ -1,10 +1,29 @@
 use rand::RngExt;
 use std::time::Instant;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+
+/* ================= STATS ================= */
+
+#[derive(Default, Clone)]
+struct Stats {
+    capacity: usize,
+    size: usize,
+    load_factor: f64,
+    empty_cells: usize,
+    tombstones: usize,
+
+    insert_calls: u64,
+    find_calls: u64,
+
+    total_probes_insert: u64,
+    total_probes_find: u64,
+}
+
+/* ================= CUCKOO ================= */
 
 struct CuckooHashTable {
     table1: Vec<Option<i64>>,
@@ -19,6 +38,14 @@ struct CuckooHashTable {
 
     rehash_count: usize,
     total_kicks: usize,
+
+    // stats
+    insert_calls: u64,
+    find_calls: u64,
+    successful_finds: u64,
+    failed_finds: u64,
+    total_probes_insert: u64,
+    total_probes_find: u64,
 }
 
 impl CuckooHashTable {
@@ -39,6 +66,13 @@ impl CuckooHashTable {
 
             rehash_count: 0,
             total_kicks: 0,
+
+            insert_calls: 0,
+            find_calls: 0,
+            successful_finds: 0,
+            failed_finds: 0,
+            total_probes_insert: 0,
+            total_probes_find: 0,
         }
     }
 
@@ -87,6 +121,8 @@ impl CuckooHashTable {
     }
 
     fn insert(&mut self, key: i64) -> bool {
+        self.insert_calls += 1;
+
         if self.contains(key) {
             return true;
         }
@@ -95,12 +131,17 @@ impl CuckooHashTable {
         let mut table_id = 1;
         let max_kicks = 500;
 
+        let mut probes = 0;
+
         for _ in 0..max_kicks {
+            probes += 1;
+
             if table_id == 1 {
                 let i = self.hash1(current);
 
                 if self.table1[i].is_none() {
                     self.table1[i] = Some(current);
+                    self.total_probes_insert += probes;
                     return true;
                 }
 
@@ -115,6 +156,7 @@ impl CuckooHashTable {
 
                 if self.table2[i].is_none() {
                     self.table2[i] = Some(current);
+                    self.total_probes_insert += probes;
                     return true;
                 }
 
@@ -130,18 +172,47 @@ impl CuckooHashTable {
         self.insert(current)
     }
 
-    fn contains(&self, key: i64) -> bool {
+    fn contains(&mut self, key: i64) -> bool {
+        self.find_calls += 1;
+
+        let mut probes = 1;
         let i1 = self.hash1(key);
+
         if self.table1[i1] == Some(key) {
+            self.total_probes_find += probes;
+            self.successful_finds += 1;
             return true;
         }
 
+        probes += 1;
         let i2 = self.hash2(key);
+
         if self.table2[i2] == Some(key) {
+            self.total_probes_find += probes;
+            self.successful_finds += 1;
             return true;
         }
 
+        self.total_probes_find += probes;
+        self.failed_finds += 1;
         false
+    }
+
+    fn size(&self) -> usize {
+        self.table1.iter().filter(|x| x.is_some()).count()
+            + self.table2.iter().filter(|x| x.is_some()).count()
+    }
+
+    fn capacity(&self) -> usize {
+        self.size * 2
+    }
+
+    fn load_factor(&self) -> f64 {
+        self.size() as f64 / self.capacity() as f64
+    }
+
+    fn empty_cells(&self) -> usize {
+        self.capacity() - self.size()
     }
 }
 
@@ -151,11 +222,7 @@ fn read_lines(path: &str, limit: usize) -> Vec<String> {
     let file = File::open(path).expect("Cannot open file");
     let reader = BufReader::new(file);
 
-    reader
-        .lines()
-        .take(limit)
-        .map(|l| l.unwrap())
-        .collect()
+    reader.lines().take(limit).map(|l| l.unwrap()).collect()
 }
 
 fn string_to_i64(s: &str) -> i64 {
@@ -165,10 +232,7 @@ fn string_to_i64(s: &str) -> i64 {
 }
 
 fn ip_to_i64(ip: &str) -> i64 {
-    let parts: Vec<u8> = ip
-        .split('.')
-        .map(|x| x.parse::<u8>().unwrap())
-        .collect();
+    let parts: Vec<u8> = ip.split('.').map(|x| x.parse::<u8>().unwrap()).collect();
 
     ((parts[0] as i64) << 24)
         | ((parts[1] as i64) << 16)
@@ -179,110 +243,93 @@ fn ip_to_i64(ip: &str) -> i64 {
 /* ================= DATASET LOADERS ================= */
 
 fn load_google_words(path: &str, limit: usize) -> Vec<i64> {
-    read_lines(path, limit)
-        .into_iter()
-        .map(|s| string_to_i64(&s))
-        .collect()
+    read_lines(path, limit).into_iter().map(|s| string_to_i64(&s)).collect()
 }
 
 fn load_wiki_words(path: &str, limit: usize) -> Vec<i64> {
-    read_lines(path, limit)
-        .into_iter()
-        .map(|s| string_to_i64(&s))
-        .collect()
-}
-
-fn load_ip_dataset(path: &str, limit: usize) -> Vec<i64> {
-    read_lines(path, limit)
-        .into_iter()
-        .map(|ip| ip_to_i64(&ip))
-        .collect()
+    read_lines(path, limit).into_iter().map(|s| string_to_i64(&s)).collect()
 }
 
 fn load_osm_ids(path: &str, limit: usize) -> Vec<i64> {
-    read_lines(path, limit)
-        .into_iter()
-        .map(|s| s.parse::<i64>().unwrap())
-        .collect()
+    read_lines(path, limit).into_iter().map(|s| s.parse::<i64>().unwrap()).collect()
 }
 
 /* ================= BENCHMARK ================= */
 
-fn benchmark_insert(data: &Vec<i64>) -> CuckooHashTable {
-    let mut table = CuckooHashTable::new(data.len() * 2);
-
-    let start = Instant::now();
-
-    for &key in data {
-        table.insert(key);
-    }
-
-    let duration = start.elapsed();
-
-    println!("Insert time: {:?}", duration);
-    println!("Rehashes: {}", table.rehash_count);
-    println!("Total kicks: {}", table.total_kicks);
-
-    table
-}
-
-fn benchmark_lookup_found(table: &CuckooHashTable, data: &Vec<i64>) {
-    let start = Instant::now();
-
-    for &key in data {
-        table.contains(key);
-    }
-
-    println!("Lookup (found): {:?}", start.elapsed());
-}
-
-fn benchmark_lookup_not_found(table: &CuckooHashTable, data: &Vec<i64>) {
-    let start = Instant::now();
-
-    for &key in data {
-        table.contains(key + 1_000_000_000);
-    }
-
-    println!("Lookup (not found): {:?}", start.elapsed());
-}
-
-fn memory_usage(table: &CuckooHashTable) {
-    let total_slots = 2 * table.size;
-    let bytes = total_slots * std::mem::size_of::<Option<i64>>();
-
-    println!("Total slots: {}", total_slots);
-    println!("Approx memory (bytes): {}", bytes);
-}
-
-/* ================= RUNNER ================= */
-
 fn run_dataset(name: &str, data: Vec<i64>) {
     println!("\n=== {} ===", name);
 
-    let table = benchmark_insert(&data);
-    benchmark_lookup_found(&table, &data);
-    benchmark_lookup_not_found(&table, &data);
-    memory_usage(&table);
+    let load_factors = [0.5, 0.7, 0.8, 0.9, 0.95];
+
+    let mut file = File::create(format!("{}_cuckoo.csv", name)).unwrap();
+
+    writeln!(
+        file,
+        "dataset,load_factor,capacity,size,empty_cells,tombstones,\
+        avg_probes_insert,avg_probes_find_hit,avg_probes_find_miss,\
+        insert_ns_per_op,find_ns_per_op"
+    ).unwrap();
+
+    for &lf in &load_factors {
+        let n = (data.len() as f64 * lf) as usize;
+        let subset = &data[..n];
+
+        let mut table = CuckooHashTable::new(n * 2);
+
+        // INSERT
+        let start = Instant::now();
+        for &key in subset {
+            table.insert(key);
+        }
+        let insert_ns = start.elapsed().as_nanos() as f64 / n as f64;
+
+        // FIND
+        let start = Instant::now();
+
+        for &key in subset {
+            table.contains(key);
+        }
+
+        for &key in subset {
+            table.contains(key + 1_000_000_000);
+        }
+
+        let find_ns = start.elapsed().as_nanos() as f64 / (2 * n) as f64;
+
+        let avg_insert = table.total_probes_insert as f64 / table.insert_calls as f64;
+        let avg_find = table.total_probes_find as f64 / table.find_calls as f64;
+
+        writeln!(
+            file,
+            "{},{:.2},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2}",
+            name,
+            lf,
+            table.capacity(),
+            table.size(),
+            table.empty_cells(),
+            0,
+            avg_insert,
+            avg_find,
+            avg_find,
+            insert_ns,
+            find_ns
+        ).unwrap();
+
+        println!("LF {:.2} → insert {:.2}ns, find {:.2}ns", lf, insert_ns, find_ns);
+    }
 }
 
 /* ================= MAIN ================= */
 
 fn main() {
-    println!("--- Real Dataset Benchmark ---");
+    println!("--- Cuckoo Hashing Benchmark ---");
 
-    // 🔹 Google words (START HERE)
     let google = load_google_words("data/google-10000-english.txt", 10_000);
-    run_dataset("Google Words", google);
+    run_dataset("google", google);
 
-    // 🔹 Wikipedia
-    let wiki = load_wiki_words("data/enwiki-latest-all-titles-in-ns0", 50_000); 
-    run_dataset("Wikipedia", wiki);
+    let wiki = load_wiki_words("data/enwiki-latest-all-titles-in-ns0", 50_000);
+    run_dataset("wiki", wiki);
 
-    // 🔹 IP dataset
-    //] let ip = load_ip_dataset("data/ip.txt", 50_000);
-    // run_dataset("IP Dataset", ip);
-
-    // 🔹 OSM IDs
     let osm = load_osm_ids("data/osm_ids.txt", 100_000);
-    run_dataset("OSM IDs", osm);
+    run_dataset("osm", osm);
 }
